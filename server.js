@@ -52,7 +52,7 @@ app.use(morgan('dev'));
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', service: 'buzzhive-api' }));
 
-app.use('/api/auth', authRoutes);
+app.use(['/api/auth', '/auth'], authRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/stories', storyRoutes);
