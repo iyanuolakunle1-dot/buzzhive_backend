@@ -28,9 +28,10 @@ app.use(apiLimiter);
 
 // Both frontend apps (main site + admin console) need to reach this API.
 // Build the allowed-origins list from env vars, with sensible dev defaults.
+const normalizeOrigin = (url) => url?.replace(/\/+$/, '');
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'http://localhost:5173',
-  process.env.ADMIN_URL || 'http://localhost:5174',
+  normalizeOrigin(process.env.CLIENT_URL) || 'http://localhost:5173',
+  normalizeOrigin(process.env.ADMIN_URL) || 'http://localhost:5174',
 ].filter(Boolean);
 
 app.use(
