@@ -7,7 +7,7 @@ async function areConnected(userIdA, userIdB) {
   const { data } = await supabase
     .from('follows')
     .select('id')
-    .eq('status', 'ACCEPTED')
+    .in('status', ['ACCEPTED', 'accepted'])
     .or(`and(follower_id.eq.${userIdA},following_id.eq.${userIdB}),and(follower_id.eq.${userIdB},following_id.eq.${userIdA})`)
     .maybeSingle();
   return !!data;
@@ -51,7 +51,7 @@ async function getConversations(req, res) {
         follower:users!follows_follower_id_fkey(id,name,username,avatar),
         following:users!follows_following_id_fkey(id,name,username,avatar)
       `)
-      .eq('status', 'ACCEPTED')
+      .in('status', ['ACCEPTED', 'accepted'])
       .or(`follower_id.eq.${req.user.id},following_id.eq.${req.user.id}`);
 
     for (const c of connections || []) {
