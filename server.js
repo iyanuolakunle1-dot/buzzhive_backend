@@ -32,13 +32,20 @@ const normalizeOrigin = (url) => url?.replace(/\/+$/, '');
 const allowedOrigins = [
   normalizeOrigin(process.env.CLIENT_URL) || 'http://localhost:5173',
   normalizeOrigin(process.env.ADMIN_URL) || 'http://localhost:5174',
+  'https://buzzhive-nine.vercel.app',
+  'https://buzzhive-admin.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:5174',
 ].filter(Boolean);
 
 app.use(
   cors({
     origin(origin, callback) {
-      // Allow requests with no origin (e.g. curl, mobile apps, server-to-server)
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin) {
+        return callback(null, true);
+      }
+      const normalizedOrigin = normalizeOrigin(origin);
+      if (allowedOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
       }
       callback(new Error('Not allowed by CORS'));
