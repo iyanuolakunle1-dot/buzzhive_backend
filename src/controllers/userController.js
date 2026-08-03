@@ -206,7 +206,7 @@ async function getFollowRequests(req, res) {
       .from('follows')
       .select('id, created_at, follower:users!follows_follower_id_fkey(id,name,username,avatar)')
       .eq('following_id', req.user.id)
-      .eq('status', 'PENDING')
+      .in('status', ['PENDING', 'pending'])
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -222,7 +222,11 @@ async function getFollowRequests(req, res) {
 // @route  GET /api/users/me/suggestions  (people you're not already following)
 async function getSuggestedUsers(req, res) {
   try {
-    const { data: following } = await supabase.from('follows').select('following_id').eq('follower_id', req.user.id);
+    const { data: following } = await supabase
+      .from('follows')
+      .select('following_id')
+      .eq('follower_id', req.user.id)
+      .in('status', ['ACCEPTED', 'accepted', 'PENDING', 'pending']);
     const excludeIds = [req.user.id, ...(following || []).map((f) => f.following_id)];
 
     const { data: users, error } = await supabase
@@ -242,7 +246,7 @@ async function getSuggestedUsers(req, res) {
         .from('follows')
         .select('follower_id')
         .eq('following_id', req.user.id)
-        .eq('status', 'ACCEPTED')
+        .in('status', ['ACCEPTED', 'accepted'])
         .in('follower_id', suggestedIds);
       followsMeSet = new Set((theirFollows || []).map((f) => f.follower_id));
     }
@@ -261,7 +265,7 @@ async function getFollowing(req, res) {
       .from('follows')
       .select('following:users!follows_following_id_fkey(id,name,username,avatar)')
       .eq('follower_id', req.user.id)
-      .eq('status', 'ACCEPTED')
+      .in('status', ['ACCEPTED', 'accepted'])
       .order('created_at', { ascending: false });
 
     if (error) throw error;
