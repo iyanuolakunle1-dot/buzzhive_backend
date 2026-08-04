@@ -24,12 +24,14 @@ function mapUser(u) {
 // post, comment, notification, message, story, etc.
 function mapAuthor(u) {
   if (!u) return null;
+  const user = Array.isArray(u) ? u[0] : u;
+  if (!user) return null;
   return {
-    id: u.id,
-    name: u.name,
-    username: u.username,
-    avatar: u.avatar ?? null,
-    isVerified: u.is_verified,
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    avatar: user.avatar ?? null,
+    isVerified: user.is_verified,
   };
 }
 

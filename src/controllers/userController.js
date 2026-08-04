@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const { mapUser, mapAuthor, mapPost } = require('../utils/mappers');
+const { resolveFollowStatus } = require('../utils/connection');
 
 const publicSelect = 'id,name,username,bio,location,avatar,cover_photo,is_verified,created_at';
 
@@ -24,13 +25,11 @@ async function getProfile(req, res) {
     // Follow status is from the VIEWER's perspective (req.user), not the profile owner.
     let followStatus = 'NONE'; // NONE | PENDING | ACCEPTED
     if (req.user && req.user.id !== user.id) {
-      const { data: existing } = await supabase
+      const { data: existingRows } = await supabase
         .from('follows')
-        .select('status')
-        .eq('follower_id', req.user.id)
-        .eq('following_id', user.id)
-        .maybeSingle();
-      if (existing) followStatus = existing.status;
+        .select('follower_id, following_id, status')
+        .or(`and(follower_id.eq.${req.user.id},following_id.eq.${user.id}),and(follower_id.eq.${user.id},following_id.eq.${req.user.id})`);
+      followStatus = resolveFollowStatus(existingRows || [], req.user.id, user.id);
     }
 
     const { data: posts, error: postsError } = await supabase
@@ -58,8 +57,6 @@ async function getProfile(req, res) {
   }
 }
 
-// @route  GET /api/users/id/:id  (minimal public info, used to open a message
-// thread with someone directly from their profile without a search step)
 async function getUserById(req, res) {
   try {
     const { data: user, error } = await supabase
@@ -69,7 +66,18 @@ async function getUserById(req, res) {
       .maybeSingle();
     if (error) throw error;
     if (!user) return res.status(404).json({ message: 'User not found' });
-    res.json({ user });
+
+    let followStatus = 'NONE';
+    if (req.user && req.user.id !== user.id) {
+      const { data: followRows } = await supabase
+        .from('follows')
+        .select('follower_id, following_id, status')
+        .or(`and(follower_id.eq.${req.user.id},following_id.eq.${user.id}),and(follower_id.eq.${user.id},following_id.eq.${req.user.id})`);
+
+      followStatus = resolveFollowStatus(followRows || [], req.user.id, user.id);
+    }
+
+    res.json({ user: { ...mapAuthor(user), followStatus } });
   } catch (err) {
     console.error('Get user by id error:', err);
     res.status(500).json({ message: 'Server error fetching user' });
@@ -107,7 +115,7 @@ async function searchUsers(req, res) {
   try {
     const raw = req.query.q || '';
     if (!raw.trim()) return res.json({ users: [] });
-    const q = raw.replace(/[,()%]/g, ''); // strip characters that have special meaning in PostgREST filters
+    const q = raw.replace(/[,()%]/g, '');
 
     const { data: users, error } = await supabase
       .from('users')
@@ -116,7 +124,34 @@ async function searchUsers(req, res) {
       .limit(15);
 
     if (error) throw error;
-    res.json({ users: users.map(mapAuthor) });
+
+    const userIds = (users || []).map((u) => u.id).filter((id) => id !== req.user?.id);
+    const followStatusMap = {};
+
+    if (userIds.length && req.user) {
+      const { data: follows } = await supabase
+        .from('follows')
+        .select('follower_id, following_id, status')
+        .or(`and(follower_id.eq.${req.user.id},following_id.in.(${userIds.join(',')})),and(following_id.eq.${req.user.id},follower_id.in.(${userIds.join(',')}))`);
+
+      for (const f of follows || []) {
+        const partnerId = f.follower_id === req.user.id ? f.following_id : f.follower_id;
+        if (!partnerId) continue;
+        const normalized = String(f.status || '').toUpperCase();
+        if (normalized === 'ACCEPTED') {
+          followStatusMap[partnerId] = 'ACCEPTED';
+        } else if (f.follower_id === req.user.id && !followStatusMap[partnerId]) {
+          followStatusMap[partnerId] = normalized || 'NONE';
+        }
+      }
+    }
+
+    res.json({
+      users: (users || []).map((u) => ({
+        ...mapAuthor(u),
+        followStatus: followStatusMap[u.id] || 'NONE',
+      })),
+    });
   } catch (err) {
     console.error('Search users error:', err);
     res.status(500).json({ message: 'Server error searching users' });
@@ -161,6 +196,7 @@ async function acceptFollowRequest(req, res) {
       return res.status(404).json({ message: 'Follow request not found' });
     }
 
+    // Accept the original request
     const { data: updated, error } = await supabase
       .from('follows')
       .update({ status: 'ACCEPTED' })
@@ -168,6 +204,24 @@ async function acceptFollowRequest(req, res) {
       .select()
       .single();
     if (error) throw error;
+
+    // Insert reverse row so BOTH users are mutually connected (Facebook-style)
+    const { data: reverseExists } = await supabase
+      .from('follows')
+      .select('id')
+      .eq('follower_id', req.user.id)
+      .eq('following_id', request.follower_id)
+      .maybeSingle();
+
+    if (!reverseExists) {
+      await supabase.from('follows').insert({
+        follower_id: req.user.id,
+        following_id: request.follower_id,
+        status: 'ACCEPTED',
+      });
+    } else {
+      await supabase.from('follows').update({ status: 'ACCEPTED' }).eq('id', reverseExists.id);
+    }
 
     await supabase.from('notifications').insert({
       type: 'FOLLOW_ACCEPTED', recipient_id: request.follower_id, sender_id: req.user.id,
@@ -258,21 +312,31 @@ async function getSuggestedUsers(req, res) {
   }
 }
 
-// @route  GET /api/users/me/following  (accepted follows, for the Friends page)
+// @route  GET /api/users/me/following  (mutual friends — accepted in both directions)
 async function getFollowing(req, res) {
   try {
+    // Get all accepted follow rows involving this user
     const { data: rows, error } = await supabase
       .from('follows')
-      .select('following:users!follows_following_id_fkey(id,name,username,avatar)')
-      .eq('follower_id', req.user.id)
+      .select('follower_id, following_id, follower:users!follows_follower_id_fkey(id,name,username,avatar), following:users!follows_following_id_fkey(id,name,username,avatar)')
       .in('status', ['ACCEPTED', 'accepted'])
-      .order('created_at', { ascending: false });
+      .or(`follower_id.eq.${req.user.id},following_id.eq.${req.user.id}`);
 
     if (error) throw error;
-    res.json({ following: rows.map((r) => mapAuthor(r.following)) });
+
+    // Build a set of user IDs that appear on BOTH sides (mutual)
+    const followerIds = new Set(rows.filter(r => r.following_id === req.user.id).map(r => r.follower_id));
+    const followingIds = new Set(rows.filter(r => r.follower_id === req.user.id).map(r => r.following_id));
+    const mutualIds = [...followingIds].filter(id => followerIds.has(id));
+
+    const friends = rows
+      .filter(r => r.follower_id === req.user.id && mutualIds.includes(r.following_id))
+      .map(r => mapAuthor(r.following));
+
+    res.json({ following: friends });
   } catch (err) {
     console.error('Get following error:', err);
-    res.status(500).json({ message: 'Server error fetching following list' });
+    res.status(500).json({ message: 'Server error fetching friends list' });
   }
 }
 

@@ -1,16 +1,18 @@
 const supabase = require('../config/supabase');
 const { mapAuthor, mapMessage } = require('../utils/mappers');
+const { hasAcceptedConnection } = require('../utils/connection');
 
 // Returns true if there's an ACCEPTED follow connection between the two
 // users, in either direction — i.e. they're "friends" in BuzzHive's model.
 async function areConnected(userIdA, userIdB) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('follows')
-    .select('id')
-    .in('status', ['ACCEPTED', 'accepted'])
-    .or(`and(follower_id.eq.${userIdA},following_id.eq.${userIdB}),and(follower_id.eq.${userIdB},following_id.eq.${userIdA})`)
-    .maybeSingle();
-  return !!data;
+    .select('follower_id, following_id, status')
+    .or(`and(follower_id.eq.${userIdA},following_id.eq.${userIdB}),and(follower_id.eq.${userIdB},following_id.eq.${userIdA})`);
+  console.log('[areConnected] rows:', JSON.stringify(data), 'error:', error?.message);
+  const result = (data || []).some(r => String(r.status).toUpperCase() === 'ACCEPTED');
+  console.log('[areConnected] result:', result);
+  return result;
 }
 
 // @route  GET /api/messages/conversations  (list of people you've messaged, latest first)
@@ -117,13 +119,9 @@ async function sendMessage(req, res) {
     const { data: receiver } = await supabase.from('users').select('id').eq('id', receiverId).maybeSingle();
     if (!receiver) return res.status(404).json({ message: 'Recipient not found' });
 
-    // You can only message someone once they've accepted a follow request
-    // between you — either direction counts as "connected".
     const connected = await areConnected(req.user.id, receiverId);
     if (!connected) {
-      return res.status(403).json({
-        message: 'You can only message people who have accepted your follow request.',
-      });
+      return res.status(403).json({ message: 'You can only message someone after you are connected.' });
     }
 
     const { data: message, error } = await supabase
